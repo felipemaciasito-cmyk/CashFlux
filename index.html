@@ -226,9 +226,9 @@ function guessCat(label,amount){
  return amount>0?"Revenus":"Divers";
 }
 const uid=()=>Math.random().toString(36).slice(2,10)+Date.now().toString(36).slice(-3);
-const blank=()=>({v:1,updatedAt:0,accounts:[],tx:[],recurring:[],goals:[],settings:{savingsRate:10,weights:{...DEFAULT_WEIGHTS},hide:false,months:6}});
+const blank=()=>({v:1,updatedAt:0,accounts:[],tx:[],recurring:[],goals:[],settings:{savingsRate:10,weights:{...DEFAULT_WEIGHTS},hide:false,months:6},bank:{url:"",token:"",links:{},from:{},lastSync:0}});
 let S=blank();
-try{const raw=localStorage.getItem("cap-state");if(raw){S={...blank(),...JSON.parse(raw)};S.settings={...blank().settings,...S.settings}}}catch(e){}
+try{const raw=localStorage.getItem("cap-state");if(raw){S={...blank(),...JSON.parse(raw)};S.settings={...blank().settings,...S.settings};S.bank={...blank().bank,...(S.bank||{})}}}catch(e){}
 
 /* ---------- Persistance (sur l'appareil) ---------- */
 function save(){
@@ -326,6 +326,7 @@ function render(){
  document.getElementById("tabs").innerHTML=TABS.map(([k,l])=>`<button class="${k===tab?"on":""}" data-tab="${k}" aria-label="${l}">${TAB_IC[k]}<span>${l}</span></button>`).join("");
  const v=document.getElementById("view");
  v.innerHTML=({home:vHome,accounts:vAccounts,budget:vBudget,forecast:vForecast,settings:vSettings})[tab]();
+ if(tab==="settings"&&S.bank.url&&S.bank.token&&!BANK.status&&!BANK.loading&&!BANK.error)setTimeout(loadBankStatus,0);
  const app=document.getElementById("app");
  if(firstPaint){app.classList.add("intro");setTimeout(()=>app.classList.remove("intro"),900);firstPaint=false;countUp()}
 }
@@ -355,7 +356,7 @@ function vHome(){
  return `
  <section class="hero"><div class="lbl">Solde total · ${S.accounts.length} compte${S.accounts.length>1?"s":""}</div>
   <div class="big amt" id="heroAmt">${bigMoney(totalBalance())}</div>
-  <span class="pill">Fin de mois estimée <b class="${diff>=0?"pos":"neg"}">${money0(tm.endEst)}</b></span></section>
+  <span class="pill">Fin de mois estimée <b class="${diff>=0?"pos":"neg"}">${money0(tm.endEst)}</b></span>${S.bank.lastSync?`<div><button class="link mut" style="margin-top:8px;font-weight:600" data-act="sync">${syncing?'<span class="spin"></span>':"⟳ Synchronisé "+ago(S.bank.lastSync)}</button></div>`:""}</section>
  <div class="actions">
   <button class="act primary" data-act="import"><span class="ic">${I.scan}</span>Importer</button>
   <button class="act" data-act="addtx"><span class="ic">${I.plus}</span>Opération</button>
@@ -459,6 +460,7 @@ function vForecast(){
 function vSettings(){
  const w=S.settings.weights;
  return `<div class="sech" style="margin-top:14px"><h2>Réglages</h2></div>
+ ${bankCard()}
  <div class="card"><div class="cat" style="padding-top:0"><div class="h"><b>Répartition du budget variable</b></div><div class="rs">Poids relatifs de chaque catégorie (le total n'a pas besoin de faire 100)</div></div>
  ${VAR_CATS.map(c=>`<label class="f" style="display:grid;grid-template-columns:1fr 80px;gap:10px;align-items:center;margin-bottom:8px"><span style="margin:0;color:var(--text);font-size:14px">${CATS[c]} ${esc(c)}</span><input type="number" min="0" inputmode="numeric" value="${+w[c]||0}" data-weight="${esc(c)}"></label>`).join("")}</div>
  <div class="card"><div class="rt" style="margin-bottom:4px">Sauvegarde</div><div class="rs" style="margin-bottom:12px">Tes données restent uniquement sur ce téléphone. Exporte une copie régulièrement : supprimer l'app efface tout.</div>
@@ -762,16 +764,174 @@ function review(root,txs,balance,raw){
 
 /* ---------- Sauvegarde ---------- */
 async function exportData(){
- const data=JSON.stringify(S,null,2),name="cashflux-sauvegarde-"+todayISO()+".json";
+ const data=JSON.stringify({...S,bank:{...S.bank,token:""}},null,2),name="cashflux-sauvegarde-"+todayISO()+".json";
  const file=new File([data],name,{type:"application/json"});
  if(navigator.canShare&&navigator.canShare({files:[file]})){try{await navigator.share({files:[file],title:"Sauvegarde CashFlux"});return}catch(e){if(e&&e.name==="AbortError")return}}
  const a=document.createElement("a");a.href=URL.createObjectURL(file);a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),3000);
 }
 document.getElementById("backupIn").onchange=ev=>{
  const f=ev.target.files[0];if(!f)return;const r=new FileReader();
- r.onload=()=>{try{const d=JSON.parse(r.result);if(!Array.isArray(d.accounts))throw 0;S={...blank(),...d};S.settings={...blank().settings,...S.settings};save();render();toast("Sauvegarde restaurée")}catch(e){toast("Fichier de sauvegarde invalide")}};
+ r.onload=()=>{try{const d=JSON.parse(r.result);if(!Array.isArray(d.accounts))throw 0;const prevBank=S.bank;S={...blank(),...d};S.settings={...blank().settings,...S.settings};S.bank={...blank().bank,...(S.bank||{})};if(!S.bank.token){S.bank.token=prevBank.token;S.bank.url=S.bank.url||prevBank.url}save();render();toast("Sauvegarde restaurée")}catch(e){toast("Fichier de sauvegarde invalide")}};
  r.readAsText(f);ev.target.value="";
 };
+
+/* ---------- Synchronisation bancaire (Enable Banking via ton serveur Cloudflare) ---------- */
+let BANK={status:null,loading:false,error:null},syncing=false,ASPSPS={};
+const BAL_PRIO=["CLBD","ITBD","XPCD","CLAV","ITAV","OPBD","OTHR"];
+const bankKey=a=>a.iban||a.uid;
+const isoDaysAgo=n=>{const d=new Date(Date.now()-n*864e5);return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0")};
+function ago(t){const m=Math.round((Date.now()-t)/60000);if(m<1)return"à l'instant";if(m<60)return`il y a ${m} min`;const h=Math.round(m/60);if(h<24)return`il y a ${h} h`;return`il y a ${Math.round(h/24)} j`}
+async function bankApi(path,opt={}){
+ if(!S.bank.url||!S.bank.token) throw new Error("Serveur bancaire non configuré");
+ let r;
+ try{r=await fetch(S.bank.url.replace(/\/+$/,"")+path,{...opt,headers:{"X-Token":S.bank.token,"Content-Type":"application/json",...(opt.headers||{})}})}
+ catch(e){throw new Error("Serveur injoignable : vérifie l'adresse et ta connexion")}
+ let d={};try{d=await r.json()}catch(e){}
+ if(!r.ok) throw new Error(typeof d.error==="string"?d.error:("Erreur "+r.status));
+ return d;
+}
+async function loadBankStatus(){
+ BANK.loading=true;BANK.error=null;
+ try{BANK.status=await bankApi("/status")}catch(e){BANK.error=e.message}
+ BANK.loading=false;if(tab==="settings")render();
+}
+function pickBalance(list){
+ if(!list||!list.length) return null;
+ for(const t of BAL_PRIO){const b=list.find(x=>x.balance_type===t);if(b&&isFinite(parseFloat(b.balance_amount?.amount)))return parseFloat(b.balance_amount.amount)}
+ const v=parseFloat(list[0].balance_amount?.amount);return isFinite(v)?v:null;
+}
+function cleanBankLabel(s){
+ s=String(s||"").replace(/\b(PAIEMENT PAR CARTE|PAIEMENT CB|CARTE X?\d{4}|CB\*?\d*|PRLV SEPA|PRELEVEMENT SEPA|PRELEVEMENT|VIR SEPA( RECU| EMIS)?|VIR INST( RE| EM)?|FACTURE CARTE DU \d+)\b/gi," ")
+  .replace(/\b\d{2}\/\d{2}(\/\d{2,4})?\b/g," ").replace(/\s{2,}/g," ").trim();
+ if(!s) return "Opération";
+ if(s===s.toUpperCase()) s=s.toLowerCase().replace(/(^|\s|-)\S/g,c=>c.toUpperCase());
+ return s.slice(0,80);
+}
+const dayDiff=(a,b)=>Math.abs((new Date(a+"T12:00")-new Date(b+"T12:00"))/864e5);
+async function syncBanks(manual){
+ if(syncing||!S.bank.url||!S.bank.token) return;
+ if(!Object.values(S.bank.links).some(Boolean)){if(manual)toast("Associe d'abord un compte bancaire à un compte CashFlux");return}
+ syncing=true;if(tab==="settings"||tab==="home")render();
+ let added=0;const errors=[];
+ try{
+  const st=await bankApi("/status");BANK.status=st;
+  for(const s of st.sessions){
+   for(const a of s.accounts){
+    const key=bankKey(a),acc=accById(S.bank.links[key]);if(!acc) continue;
+    try{
+     const from=S.bank.from[key]||isoDaysAgo(90);
+     const {transactions=[]}=await bankApi(`/accounts/${encodeURIComponent(a.uid)}/transactions?date_from=${from}`);
+     for(const t of transactions){
+      if(t.status&&t.status!=="BOOK") continue;
+      const raw=parseFloat(t.transaction_amount?.amount);if(!isFinite(raw)||!raw) continue;
+      const amount=Math.round((t.credit_debit_indicator==="DBIT"?-Math.abs(raw):t.credit_debit_indicator==="CRDT"?Math.abs(raw):raw)*100)/100;
+      const date=String(t.booking_date||t.value_date||t.transaction_date||todayISO()).slice(0,10);
+      const rem=Array.isArray(t.remittance_information)?t.remittance_information.join(" "):(t.remittance_information||"");
+      const party=amount<0?t.creditor?.name:t.debtor?.name;
+      const label=cleanBankLabel(party||rem||t.note||"");
+      const ext=key+":"+(t.entry_reference||t.transaction_id||(date+"|"+amount+"|"+rem.slice(0,30)));
+      if(S.tx.some(x=>x.extId===ext)) continue;
+      const twin=S.tx.find(x=>x.accountId===acc.id&&!x.extId&&Math.abs(x.amount-amount)<0.005&&dayDiff(x.date,date)<=3);
+      if(twin){twin.extId=ext;continue}
+      S.tx.push({id:uid(),accountId:acc.id,date,label,amount,category:guessCat(label+" "+rem,amount),source:"banque",extId:ext});added++;
+     }
+     const {balances}=await bankApi(`/accounts/${encodeURIComponent(a.uid)}/balances`);
+     const b=pickBalance(balances);if(b!=null) acc.initial+=b-accBalance(acc);
+     S.bank.from[key]=isoDaysAgo(10);
+    }catch(e){errors.push(acc.name+" : "+e.message)}
+   }
+  }
+  S.bank.lastSync=Date.now();save();
+ }catch(e){errors.push(e.message)}
+ syncing=false;render();
+ if(errors.length) toast(errors[0].slice(0,90));
+ else if(manual||added) toast(added?`${added} nouvelle${added>1?"s":""} opération${added>1?"s":""}`:"Comptes à jour");
+}
+function maybeSync(){if(S.bank.url&&S.bank.token&&Object.values(S.bank.links).some(Boolean)&&Date.now()-(S.bank.lastSync||0)>4*36e5)syncBanks(false)}
+function bankCard(){
+ const b=S.bank;
+ if(!b.url||!b.token) return `<div class="card"><div class="rt">Banques connectées</div><div class="rs" style="margin:4px 0 12px">Synchronise automatiquement soldes et opérations depuis tes banques.</div><button class="btn p w" data-act="bankcfg">Configurer le serveur</button></div>`;
+ const st=BANK.status;let inner="";
+ if(BANK.error) inner=`<div class="alert" style="margin-top:0"><span>⚠️</span><div>${esc(BANK.error)}</div></div><button class="btn w" style="margin-top:10px" data-act="bankretry">Réessayer</button>`;
+ else if(!st) inner=`<div class="rs"><span class="spin"></span>&nbsp; Connexion au serveur…</div>`;
+ else if(!st.configured) inner=`<div class="rs" style="margin-bottom:10px">Dernière étape : importe la clé privée téléchargée en créant ton application Enable Banking (fichier .pem).</div><button class="btn p w" data-act="bankkey">Importer la clé .pem</button>`;
+ else{
+  inner=st.sessions.length?st.sessions.map(s=>{
+   const days=s.valid_until?Math.floor((new Date(s.valid_until)-Date.now())/864e5):null;
+   return `<div style="padding:10px 0;border-bottom:1px solid var(--line)"><div style="display:flex;justify-content:space-between;align-items:center"><b>${esc(s.aspsp.name)}</b>${days!=null?`<span class="chip" style="${days<10?"color:var(--neg)":""}">${days<0?"accès expiré":`accès encore ${days} j`}</span>`:""}</div>
+   ${s.accounts.map(a=>`<label class="f" style="margin:8px 0 0"><span>${esc(a.name||"Compte")}${a.iban?" · ••"+esc(a.iban.slice(-4)):""}</span><select data-link="${esc(bankKey(a))}"><option value="">Ne pas synchroniser</option>${accOptions(b.links[bankKey(a)])}</select></label>`).join("")||`<div class="rs">Aucun compte autorisé</div>`}
+   <div style="display:flex;gap:8px;margin-top:10px"><button class="btn" style="flex:1;padding:9px" data-act="bankrenew" data-name="${esc(s.aspsp.name)}" data-country="${esc(s.aspsp.country)}">Renouveler</button><button class="btn d" style="flex:1;padding:9px" data-act="bankdel" data-id="${esc(s.session_id)}">Déconnecter</button></div></div>`}).join(""):`<div class="rs">Aucune banque connectée pour l'instant.</div>`;
+  inner+=`<div class="f2" style="margin-top:12px"><button class="btn p" data-act="bankadd">+ Banque</button><button class="btn" data-act="sync">${syncing?'<span class="spin"></span>':"Synchroniser"}</button></div><div class="rs" style="margin-top:8px">${b.lastSync?"Dernière synchro "+ago(b.lastSync):"Jamais synchronisé"}</div>`;
+ }
+ return `<div class="card"><div style="display:flex;justify-content:space-between;align-items:baseline"><div class="rt">Banques connectées</div><button class="link" data-act="bankcfg">Serveur</button></div><div style="margin-top:8px">${inner}</div></div>`;
+}
+function formBankCfg(){
+ sheet(`<h3>Serveur bancaire</h3><p class="rs" style="margin-top:-6px">L'adresse de ton Worker Cloudflare et le code d'accès (APP_TOKEN) que tu as choisi.</p>
+ <label class="f"><span>Adresse du serveur</span><input id="bU" inputmode="url" autocapitalize="off" autocorrect="off" value="${esc(S.bank.url)}" placeholder="https://cashflux-bank.xxx.workers.dev"></label>
+ <label class="f"><span>Code d'accès</span><input id="bT" type="password" autocapitalize="off" autocorrect="off" value="${esc(S.bank.token)}"></label>
+ <button class="btn p w" id="bSave">Enregistrer</button>`,root=>{
+  root.querySelector("#bSave").onclick=()=>{
+   let u=root.querySelector("#bU").value.trim();if(u&&!/^https?:\/\//.test(u))u="https://"+u;
+   S.bank.url=u.replace(/\/+$/,"");S.bank.token=root.querySelector("#bT").value.trim();save();
+   BANK={status:null,loading:false,error:null};closeSheet();render();loadBankStatus();
+  };
+ });
+}
+function formBankKey(){
+ sheet(`<h3>Clé Enable Banking</h3><p class="rs" style="margin-top:-6px">Choisis le fichier .pem téléchargé lors de la création de l'application (dossier Téléchargements de l'app Fichiers). Son nom est l'identifiant de l'application.</p>
+ <label class="drop" for="kF"><b>Choisir le fichier .pem</b></label><input type="file" id="kF" hidden>
+ <label class="f" style="margin-top:12px"><span>Identifiant de l'application</span><input id="kId" autocapitalize="off" autocorrect="off" placeholder="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"></label>
+ <button class="btn p w" id="kGo" disabled>Envoyer au serveur</button><div class="rs" id="kMsg" style="margin-top:8px"></div>`,root=>{
+  let pem="";
+  root.querySelector("#kF").onchange=ev=>{const f=ev.target.files[0];if(!f)return;const r=new FileReader();
+   r.onload=()=>{pem=String(r.result);const ok=/PRIVATE KEY/.test(pem);root.querySelector("#kMsg").textContent=ok?"Clé lue ✓":"Ce fichier ne ressemble pas à une clé privée .pem";
+    const m=f.name.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);if(m)root.querySelector("#kId").value=m[0];root.querySelector("#kGo").disabled=!ok};
+   r.readAsText(f)};
+  root.querySelector("#kGo").onclick=async()=>{
+   const b=root.querySelector("#kGo"),appId=root.querySelector("#kId").value.trim();
+   if(!appId){toast("Indique l'identifiant de l'application");return}
+   b.disabled=true;b.innerHTML='<span class="spin"></span>&nbsp; Vérification…';
+   try{await bankApi("/setup",{method:"POST",body:JSON.stringify({appId,pem})});closeSheet();toast("Clé enregistrée et vérifiée");loadBankStatus()}
+   catch(e){b.disabled=false;b.textContent="Envoyer au serveur";root.querySelector("#kMsg").textContent=e.message}
+  };
+ });
+}
+async function getAspsps(country){
+ if(!ASPSPS[country]){const d=await bankApi("/aspsps?country="+country);ASPSPS[country]=(d.aspsps||[]).filter(a=>!a.psu_types||a.psu_types.includes("personal")).sort((x,y)=>x.name.localeCompare(y.name))}
+ return ASPSPS[country];
+}
+async function connectBank(aspsp){
+ const mcv=+aspsp.maximum_consent_validity;
+ const days=mcv?Math.max(1,Math.min(180,Math.floor(mcv/86400))):90;
+ const d=await bankApi("/connect",{method:"POST",body:JSON.stringify({aspsp:{name:aspsp.name,country:aspsp.country},returnUrl:location.href.split("#")[0],days})});
+ location.href=d.url;
+}
+function formBankAdd(){
+ const C=[["FR","France"],["BE","Belgique"],["LU","Luxembourg"],["DE","Allemagne"],["ES","Espagne"],["IT","Italie"],["NL","Pays-Bas"],["PT","Portugal"],["LT","Lituanie (Revolut…)"],["IE","Irlande"]];
+ sheet(`<h3>Connecter une banque</h3>
+ <div class="f2"><label class="f"><span>Pays de la banque</span><select id="cC">${C.map(([k,l])=>`<option value="${k}">${l}</option>`).join("")}</select></label><label class="f"><span>Rechercher</span><input id="cQ" placeholder="Boursorama…" autocorrect="off"></label></div>
+ <div id="cL" class="card" style="padding:4px 14px;box-shadow:none;background:var(--surface2);max-height:50vh;overflow:auto"><div class="rs" style="padding:12px 0"><span class="spin"></span>&nbsp; Chargement des banques…</div></div>
+ <p class="rs">Tu seras redirigé vers ta banque pour autoriser l'accès en lecture seule, puis ramené dans CashFlux.</p>`,root=>{
+  let list=[];
+  const draw=()=>{const q=norm(root.querySelector("#cQ").value);const f=list.filter(a=>!q||norm(a.name).includes(q)).slice(0,80);
+   root.querySelector("#cL").innerHTML=f.length?f.map(a=>`<button class="rowbtn" data-bank="${esc(a.name)}"><div class="row"><div class="av">${a.logo?`<img src="${esc(a.logo)}" alt="" style="width:26px;height:26px;object-fit:contain;border-radius:6px">`:"🏦"}</div><div class="rmain"><div class="rt">${esc(a.name)}</div></div></div></button>`).join(""):`<div class="rs" style="padding:12px 0">Aucune banque trouvée</div>`;
+   root.querySelectorAll("[data-bank]").forEach(b=>b.onclick=async()=>{const a=list.find(x=>x.name===b.dataset.bank);b.innerHTML=`<div class="row"><span class="spin"></span>&nbsp; Redirection vers ${esc(a.name)}…</div>`;try{await connectBank(a)}catch(e){toast(e.message.slice(0,90));draw()}})};
+  const load=async()=>{const c=root.querySelector("#cC").value;try{list=await getAspsps(c);draw()}catch(e){root.querySelector("#cL").innerHTML=`<div class="rs" style="padding:12px 0">${esc(e.message)}</div>`}};
+  root.querySelector("#cC").onchange=load;root.querySelector("#cQ").oninput=draw;load();
+ });
+}
+async function renewBank(name,country){
+ try{const list=await getAspsps(country);const a=list.find(x=>x.name===name)||{name,country};toast("Redirection vers "+name+"…");await connectBank({...a,country})}
+ catch(e){toast(e.message.slice(0,90))}
+}
+/* Retour depuis la banque */
+(function(){
+ const h=location.hash;if(!h.startsWith("#bank="))return;
+ const q=new URLSearchParams(h.slice(1));history.replaceState(null,"",location.pathname+location.search);
+ tab="settings";
+ setTimeout(()=>toast(q.get("bank")==="ok"?"Banque connectée : associe ses comptes ci-dessous":"Connexion échouée : "+(q.get("msg")||"réessaie").slice(0,70)),500);
+})();
+document.addEventListener("visibilitychange",()=>{if(document.visibilityState!=="visible")return;maybeSync();if(tab==="settings"&&S.bank.url){BANK={status:BANK.status,loading:false,error:null};loadBankStatus()}});
 
 /* ---------- Événements ---------- */
 document.addEventListener("click",ev=>{
@@ -787,16 +947,21 @@ document.addEventListener("click",ev=>{
  ({import:()=>formImport(id||openAcc),addtx:()=>formTx(null,id||openAcc),transfer:formTransfer,addrec:()=>formRec(null,el.dataset.kind),addacc:()=>formAccount(),
    editacc:()=>formAccount(accById(id)),backacc:()=>{openAcc=null;render()},setbal:()=>formSetBal(accById(id)),addgoal:()=>formGoal(),
    subadd:()=>formRec(null,"charge",S.tx.find(t=>t.id===id)),export:exportData,restore:()=>document.getElementById("backupIn").click(),
+   bankcfg:formBankCfg,bankkey:formBankKey,bankadd:formBankAdd,bankretry:()=>{BANK={status:null,loading:false,error:null};loadBankStatus();render()},
+   bankrenew:()=>renewBank(el.dataset.name,el.dataset.country),sync:()=>syncBanks(true),
+   bankdel:async()=>{if(!confirm("Déconnecter cette banque ? Les opérations déjà importées sont conservées."))return;try{await bankApi("/sessions/"+encodeURIComponent(id),{method:"DELETE"});toast("Banque déconnectée")}catch(e){toast(e.message)}loadBankStatus()},
    reset:()=>{if(confirm("Effacer tous les comptes, opérations et réglages ?")){S=blank();save();go("home")}}})[a]?.();
 });
 document.addEventListener("input",ev=>{
  if(ev.target.id==="saveRate"){S.settings.savingsRate=+ev.target.value;clearTimeout(window._sr);window._sr=setTimeout(()=>{save();render()},120)}
+ if(ev.target.dataset.link!==undefined){const k=ev.target.dataset.link;if(ev.target.value)S.bank.links[k]=ev.target.value;else delete S.bank.links[k];delete S.bank.from[k];save();toast(ev.target.value?"Compte associé":"Compte dissocié")}
  if(ev.target.dataset.weight){S.settings.weights[ev.target.dataset.weight]=Math.max(0,+ev.target.value||0);save()}
 });
 document.addEventListener("keydown",ev=>{if(ev.key==="Escape")closeSheet()});
 document.getElementById("eyeBtn").onclick=()=>{S.settings.hide=!S.settings.hide;save();render()};
 
 render();
+setTimeout(maybeSync,800);
 if(navigator.storage&&navigator.storage.persist)navigator.storage.persist().catch(()=>{});
 if("serviceWorker" in navigator&&location.protocol==="https:")navigator.serviceWorker.register("sw.js").catch(()=>{});
 </script>

@@ -34,6 +34,8 @@
   --accent:#7F7DFF;--accent2:#B48CFF;--pos:#3AD48A;--neg:#FF6A70;--warn:#F2B256;--shadow:0 1px 0 rgba(255,255,255,.03) inset,0 10px 30px rgba(0,0,0,.35);
 }
 html{scroll-padding-top:env(safe-area-inset-top,0px)}
+html,body{overflow-x:hidden;overscroll-behavior-x:none;max-width:100%}
+.app{overflow-x:clip}
 *,*::before,*::after{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--text);font-family:Manrope,-apple-system,"Segoe UI",Roboto,sans-serif;font-size:15px;line-height:1.45;-webkit-font-smoothing:antialiased;font-feature-settings:"tnum" 1}
 button,input,select{font:inherit;color:inherit}
@@ -164,7 +166,7 @@ input.mini[data-f=label]{font-weight:600}
 .hidden-amt .amt{filter:blur(7px);transition:filter .2s}
 /* Carrousel de l'accueil */
 .wash{position:fixed;left:0;right:0;top:0;height:480px;background:linear-gradient(180deg,color-mix(in srgb,var(--accent) 20%,transparent),transparent);pointer-events:none;z-index:-1}
-.hscroll{position:relative;display:flex;gap:12px;overflow-x:auto;scroll-snap-type:x mandatory;margin:0 -18px;padding:8px 0 14px;scrollbar-width:none;--cw:min(78%,300px)}
+.hscroll{position:relative;display:flex;overscroll-behavior-x:contain;gap:12px;overflow-x:auto;scroll-snap-type:x mandatory;margin:0 -18px;padding:8px 0 14px;scrollbar-width:none;--cw:min(78%,300px)}
 .hscroll::-webkit-scrollbar{display:none}
 .hscroll::before,.hscroll::after{content:"";flex:0 0 max(0px,calc((100% - var(--cw))/2 - 12px))}
 .hscroll .hcard{flex:0 0 var(--cw);max-width:none;scroll-snap-align:center;cursor:pointer;-webkit-touch-callout:none;-webkit-user-select:none;user-select:none;transition:transform .35s cubic-bezier(.2,.8,.2,1),opacity .35s,box-shadow .35s}
@@ -189,6 +191,19 @@ input.mini[data-f=label]{font-weight:600}
 .cdotsbar i.on{width:18px;background:var(--accent)}
 .fadein{animation:fadein .28s ease both}
 @keyframes fadein{from{opacity:0;transform:translateY(6px)}}
+/* Encadré d'opérations assorti à la carte */
+.txcard{position:relative;overflow:hidden;color:#fff;border-radius:22px;padding:4px 16px;box-shadow:0 16px 34px -14px color-mix(in srgb,var(--accent) 65%,transparent);transition:box-shadow .5s}
+.txcard::after{content:"";position:absolute;right:-60px;top:-70px;width:220px;height:220px;border-radius:50%;background:rgba(255,255,255,.10);pointer-events:none}
+.txcard.all{border:1px solid rgba(255,255,255,.14)}
+.txcard>*{position:relative;z-index:1}
+.txcard .rs{color:rgba(255,255,255,.72)}
+.txcard .av{background:rgba(255,255,255,.18)}
+.txcard .ramt,.txcard .ramt.pos{color:#fff}
+.txcard .ramt.pos{background:rgba(255,255,255,.2);padding:2px 8px;border-radius:99px}
+.txcard .rowbtn{color:#fff}
+.txcard .row{border-bottom:1px solid rgba(255,255,255,.14)}
+.txcard .rowbtn:last-child .row{border-bottom:0}
+.txcard .empty,.txcard .empty b{color:#fff}
 /* Load moment */
 @media (prefers-reduced-motion:no-preference){
   .intro .hero .big{animation:rise .7s cubic-bezier(.2,.8,.2,1) both}
@@ -385,10 +400,13 @@ function accCard(a,i){
 const THEME=[["#4F4CE6","#8D5CF6"],["#0E9F8E","#2BC48A"],["#E2575E","#F2945B"],["#4A5B9C","#7D8CC8"],["#2C7BE5","#45B3F2"],["#B4469B","#E36FA6"]];
 const accColor=a=>a.color??(S.accounts.indexOf(a)%6);
 function validSel(){if(homeSel!=="all"&&!accById(homeSel))homeSel="all";return homeSel}
-function allCard(){
+function allBg(){
  const spots=[[12,18],[88,22],[78,92],[18,88],[50,50],[95,60]];
  const bg=S.accounts.slice(0,6).map((a,i)=>`radial-gradient(circle at ${spots[i][0]}% ${spots[i][1]}%,${THEME[accColor(a)][0]}cc 0,transparent 55%)`).join(",");
- return `<div class="acc hcard all" role="button" tabindex="0" data-hcard="all" style="background:${bg?bg+",":""}#15162A">
+ return (bg?bg+",":"")+"#15162A";
+}
+function allCard(){
+ return `<div class="acc hcard all" role="button" tabindex="0" data-hcard="all" style="background:${allBg()}">
  <div><div class="bank">Tous les comptes</div><div class="alltitle">All</div><div class="cdots">${S.accounts.map(a=>`<i style="background:${THEME[accColor(a)][0]}"></i>`).join("")}</div></div>
  <div class="bal">${money(totalBalance())}</div></div>`;
 }
@@ -403,7 +421,8 @@ function homeTxHtml(){
  const list=(a?S.tx.filter(t=>t.accountId===a.id):[...S.tx]).sort((x,z)=>z.date.localeCompare(x.date)).slice(0,25);
  const head=`<div class="sech"><h2>${a?esc(a.name):"Toutes les opérations"}</h2>${a?`<button class="link" data-open-acc="${a.id}">Tout voir</button>`:`<button class="link" data-tab="accounts">Tout voir</button>`}</div>`;
  const body=list.length?groupByMonth(list,!a):`<div class="empty"><b>Aucune opération</b>${a?"Importe une capture de ce compte ou synchronise ta banque.":"Importe une capture de ton appli bancaire pour commencer."}</div>`;
- return head+`<div class="card" style="padding:4px 14px">${body}</div>`;
+ const look=a?`class="txcard g${accColor(a)}"`:`class="txcard all" style="background:${allBg()}"`;
+ return head+`<div ${look}>${body}</div>`;
 }
 function vHome(){
  if(!S.accounts.length) return onboarding();

@@ -17,6 +17,9 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
+@property --accent{syntax:'<color>';inherits:true;initial-value:#5856E8}
+@property --accent2{syntax:'<color>';inherits:true;initial-value:#9A6CFF}
+:root{transition:--accent .5s ease,--accent2 .5s ease}
 :root{
   --bg:#F3F4F9;--surface:#FFFFFF;--surface2:#EBEDF5;--text:#14152A;--muted:#6C6F88;--line:rgba(20,21,42,.08);
   --accent:#5856E8;--accent2:#9A6CFF;--pos:#11A26A;--neg:#E0464E;--warn:#D9952F;--shadow:0 1px 2px rgba(20,21,42,.04),0 8px 24px rgba(20,21,42,.06);
@@ -159,6 +162,33 @@ input.mini[data-f=label]{font-weight:600}
 .goal{padding:10px 0;border-bottom:1px solid var(--line)}
 .goal:last-child{border:0}
 .hidden-amt .amt{filter:blur(7px);transition:filter .2s}
+/* Carrousel de l'accueil */
+.wash{position:fixed;left:0;right:0;top:0;height:480px;background:linear-gradient(180deg,color-mix(in srgb,var(--accent) 20%,transparent),transparent);pointer-events:none;z-index:-1}
+.hscroll{position:relative;display:flex;gap:12px;overflow-x:auto;scroll-snap-type:x mandatory;margin:0 -18px;padding:8px 0 14px;scrollbar-width:none;--cw:min(78%,300px)}
+.hscroll::-webkit-scrollbar{display:none}
+.hscroll::before,.hscroll::after{content:"";flex:0 0 max(0px,calc((100% - var(--cw))/2 - 12px))}
+.hscroll .hcard{flex:0 0 var(--cw);max-width:none;scroll-snap-align:center;cursor:pointer;-webkit-touch-callout:none;-webkit-user-select:none;user-select:none;transition:transform .35s cubic-bezier(.2,.8,.2,1),opacity .35s,box-shadow .35s}
+.hscroll .hcard:not(.on){transform:scale(.92);opacity:.6}
+.hscroll .hcard.on{box-shadow:0 16px 34px -12px color-mix(in srgb,var(--accent) 70%,transparent)}
+.hcard.all{background:#15162A;border:1px solid rgba(255,255,255,.14)}
+.hcard.all::after{background:radial-gradient(circle,rgba(255,255,255,.14),transparent 70%)}
+.hcard.all .alltitle{font-size:26px;font-weight:800;letter-spacing:-.02em;line-height:1}
+.hcard .cdots{display:flex;gap:5px;margin-top:8px}.hcard .cdots i{width:9px;height:9px;border-radius:50%;border:1.5px solid rgba(255,255,255,.7)}
+.hscroll.reorder{scroll-snap-type:none}
+.hscroll.reorder .hcard{transform:none;opacity:1}
+.hscroll.reorder .hcard[data-acc]{outline:2px dashed rgba(255,255,255,.6);outline-offset:-7px;touch-action:none}
+.hcard.dragging{z-index:5;transition:none!important;box-shadow:0 24px 44px -14px rgba(0,0,0,.5)!important}
+.hcard.shift{transition:transform .22s ease!important}
+.hcard .mvs{position:absolute;top:10px;right:10px;display:flex;gap:6px;z-index:2}
+.hcard .mvs button{width:32px;height:32px;border-radius:50%;border:0;background:rgba(255,255,255,.25);color:#fff;font-size:17px;font-weight:800;line-height:1}
+.hcard .mvs button:disabled{opacity:.3}
+.reobar{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 14px;border-radius:16px;background:color-mix(in srgb,var(--accent) 12%,var(--surface));font-size:13.5px;font-weight:600;margin-bottom:6px}
+.reobar[hidden]{display:none}
+.cdotsbar{display:flex;justify-content:center;gap:6px;margin-top:2px}
+.cdotsbar i{width:6px;height:6px;border-radius:99px;background:color-mix(in srgb,var(--text) 18%,transparent);transition:all .3s}
+.cdotsbar i.on{width:18px;background:var(--accent)}
+.fadein{animation:fadein .28s ease both}
+@keyframes fadein{from{opacity:0;transform:translateY(6px)}}
 /* Load moment */
 @media (prefers-reduced-motion:no-preference){
   .intro .hero .big{animation:rise .7s cubic-bezier(.2,.8,.2,1) both}
@@ -316,7 +346,9 @@ function detectSubs(){
 const TABS=[["home","Accueil"],["accounts","Comptes"],["budget","Budget"],["forecast","Prévisions"],["settings","Réglages"]];
 const TAB_IC={home:I.home,accounts:I.cards,budget:I.pie,forecast:I.trend,settings:I.gear};
 let tab="home",openAcc=null,firstPaint=true;
-function go(t){tab=t;openAcc=null;render();window.scrollTo({top:0})}
+let homeSel=(()=>{try{return localStorage.getItem("cashflux-homecard")||"all"}catch(e){return "all"}})();
+let reorderMode=false,drag=null,suppressClick=0,carRaf=0;
+function go(t){tab=t;openAcc=null;reorderMode=false;render();window.scrollTo({top:0})}
 
 function render(){
  const d=new Date();
@@ -329,6 +361,8 @@ function render(){
  if(tab==="settings"&&S.bank.url&&S.bank.token&&!BANK.status&&!BANK.loading&&!BANK.error)setTimeout(loadBankStatus,0);
  const app=document.getElementById("app");
  if(firstPaint){app.classList.add("intro");setTimeout(()=>app.classList.remove("intro"),900);firstPaint=false;countUp()}
+ if(tab==="home"&&S.accounts.length)setupCarousel();
+ applyTheme();
 }
 function countUp(){
  const el=document.getElementById("heroAmt");if(!el||matchMedia("(prefers-reduced-motion: reduce)").matches)return;
@@ -348,12 +382,35 @@ function txRow(t,showAcc=true){
 function accCard(a,i){
  return `<button class="acc g${a.color??(i%6)}" data-open-acc="${a.id}"><div><div class="bank">${esc(a.bank||a.type||"")}</div><div class="nm">${esc(a.name)}</div></div><div class="bal">${money(accBalance(a))}</div></button>`;
 }
+const THEME=[["#4F4CE6","#8D5CF6"],["#0E9F8E","#2BC48A"],["#E2575E","#F2945B"],["#4A5B9C","#7D8CC8"],["#2C7BE5","#45B3F2"],["#B4469B","#E36FA6"]];
+const accColor=a=>a.color??(S.accounts.indexOf(a)%6);
+function validSel(){if(homeSel!=="all"&&!accById(homeSel))homeSel="all";return homeSel}
+function allCard(){
+ const spots=[[12,18],[88,22],[78,92],[18,88],[50,50],[95,60]];
+ const bg=S.accounts.slice(0,6).map((a,i)=>`radial-gradient(circle at ${spots[i][0]}% ${spots[i][1]}%,${THEME[accColor(a)][0]}cc 0,transparent 55%)`).join(",");
+ return `<div class="acc hcard all" role="button" tabindex="0" data-hcard="all" style="background:${bg?bg+",":""}#15162A">
+ <div><div class="bank">Tous les comptes</div><div class="alltitle">All</div><div class="cdots">${S.accounts.map(a=>`<i style="background:${THEME[accColor(a)][0]}"></i>`).join("")}</div></div>
+ <div class="bal">${money(totalBalance())}</div></div>`;
+}
+function accCard(a,i){
+ const n=S.accounts.length;
+ return `<div class="acc hcard g${accColor(a)}" role="button" tabindex="0" data-hcard="${a.id}" data-acc="${a.id}">
+ ${reorderMode?`<div class="mvs"><button data-act="mvl" data-id="${a.id}" aria-label="Déplacer à gauche" ${i===0?"disabled":""}>‹</button><button data-act="mvr" data-id="${a.id}" aria-label="Déplacer à droite" ${i===n-1?"disabled":""}>›</button></div>`:""}
+ <div><div class="bank">${esc(a.bank||a.type||"")}</div><div class="nm">${esc(a.name)}</div></div><div class="bal">${money(accBalance(a))}</div></div>`;
+}
+function homeTxHtml(){
+ const sel=validSel(),a=sel==="all"?null:accById(sel);
+ const list=(a?S.tx.filter(t=>t.accountId===a.id):[...S.tx]).sort((x,z)=>z.date.localeCompare(x.date)).slice(0,25);
+ const head=`<div class="sech"><h2>${a?esc(a.name):"Toutes les opérations"}</h2>${a?`<button class="link" data-open-acc="${a.id}">Tout voir</button>`:`<button class="link" data-tab="accounts">Tout voir</button>`}</div>`;
+ const body=list.length?groupByMonth(list,!a):`<div class="empty"><b>Aucune opération</b>${a?"Importe une capture de ce compte ou synchronise ta banque.":"Importe une capture de ton appli bancaire pour commencer."}</div>`;
+ return head+`<div class="card" style="padding:4px 14px">${body}</div>`;
+}
 function vHome(){
  if(!S.accounts.length) return onboarding();
+ validSel();
  const tm=thisMonth(),diff=tm.endEst-totalBalance(),risks=overdraftRisks();
  const used=tm.p.free?Math.min(100,tm.spentTot/tm.p.free*100):0;
- const recent=[...S.tx].sort((a,b)=>b.date.localeCompare(a.date)).slice(0,7);
- return `
+ return `<div class="wash"></div>
  <section class="hero"><div class="lbl">Solde total · ${S.accounts.length} compte${S.accounts.length>1?"s":""}</div>
   <div class="big amt" id="heroAmt">${bigMoney(totalBalance())}</div>
   <span class="pill">Fin de mois estimée <b class="${diff>=0?"pos":"neg"}">${money0(tm.endEst)}</b></span>${S.bank.lastSync?`<div><button class="link mut" style="margin-top:8px;font-weight:600" data-act="sync">${syncing?'<span class="spin"></span>':"⟳ Synchronisé "+ago(S.bank.lastSync)}</button></div>`:""}</section>
@@ -364,15 +421,96 @@ function vHome(){
   <button class="act" data-act="addrec"><span class="ic">${I.repeat}</span>Récurrent</button>
  </div>
  ${risks.map(r=>`<div class="alert"><span>⚠️</span><div><b>${esc(r.a.name)}</b> risque de passer à <b class="amt">${fmt.format(r.min)}</b> vers le ${r.day}. Prévois un virement avant cette date.</div></div>`).join("")}
- <div class="sec"><div class="scroller">${S.accounts.map(accCard).join("")}<button class="acc add" data-act="addacc">+ Compte</button></div></div>
  <div class="sec"><div class="card">
   <div class="daily"><div><div class="rs">Tu peux dépenser</div><div class="v">${money0(tm.perDay)}<span class="mut" style="font-size:15px;font-weight:600"> / jour</span></div></div>
   <div style="text-align:right" class="rs">${tm.daysLeft} jour${tm.daysLeft>1?"s":""} restant${tm.daysLeft>1?"s":""}<br>${money0(tm.remainVar)} disponibles</div></div>
   <div class="bar ${used>100?"over":used>85?"warn":""}"><i style="width:${used}%"></i></div>
   <div class="rs" style="margin-top:8px">${money0(tm.spentTot)} dépensés sur ${money0(tm.p.free)} de budget variable${!S.recurring.length?" · ajoute tes revenus et charges pour calculer ton budget":""}</div>
  </div></div>
- <div class="sec"><div class="sech"><h2>Dernières opérations</h2><button class="link" data-tab="accounts">Tout voir</button></div>
- <div class="card" style="padding:4px 14px">${recent.length?recent.map(t=>txRow(t)).join(""):`<div class="empty"><b>Aucune opération</b>Importe une capture de ton appli bancaire pour commencer.</div>`}</div></div>`;
+ <div class="sec"><div class="sech"><h2>Mes comptes</h2><div>${S.accounts.length>1?`<button class="link" data-act="reorder">Réorganiser</button>`:""}<button class="link" data-act="addacc">+ Compte</button></div></div>
+ <div class="reobar" id="reoBar" ${reorderMode?"":"hidden"}><span>Maintiens une carte et glisse-la, ou utilise ‹ ›</span><button class="btn p" style="padding:8px 14px" data-act="reodone">Terminé</button></div>
+ <div class="hscroll${reorderMode?" reorder":""}" id="hScroll">${allCard()}${S.accounts.map(accCard).join("")}</div>
+ <div class="cdotsbar" id="cDots"><i data-dot="all"></i>${S.accounts.map(a=>`<i data-dot="${a.id}"></i>`).join("")}</div></div>
+ <div class="sec" id="homeTx">${homeTxHtml()}</div>`;
+}
+
+/* ---------- Carrousel : sélection, couleur, réorganisation ---------- */
+function applyTheme(){
+ const r=document.documentElement.style,a=tab==="home"&&homeSel!=="all"?accById(homeSel):null;
+ if(a){const [c1,c2]=THEME[accColor(a)];r.setProperty("--accent",c1);r.setProperty("--accent2",c2)}
+ else{r.removeProperty("--accent");r.removeProperty("--accent2")}
+}
+function markSel(){
+ document.querySelectorAll("#hScroll .hcard").forEach(c=>c.classList.toggle("on",c.dataset.hcard===homeSel));
+ document.querySelectorAll("#cDots i").forEach(d=>d.classList.toggle("on",d.dataset.dot===homeSel));
+}
+function selectCard(id){
+ if(id===homeSel)return;
+ homeSel=id;try{localStorage.setItem("cashflux-homecard",id)}catch(e){}
+ markSel();applyTheme();
+ const box=document.getElementById("homeTx");if(box){box.innerHTML=homeTxHtml();box.classList.remove("fadein");void box.offsetWidth;box.classList.add("fadein")}
+}
+function centerCard(el,smooth){
+ const sc=document.getElementById("hScroll");if(!sc||!el)return;
+ sc.scrollTo({left:el.offsetLeft-(sc.clientWidth-el.offsetWidth)/2,behavior:smooth?"smooth":"auto"});
+}
+function nearestCard(sc){
+ const mid=sc.scrollLeft+sc.clientWidth/2;let best=null,bd=1e9;
+ sc.querySelectorAll(".hcard").forEach(c=>{const d=Math.abs(c.offsetLeft+c.offsetWidth/2-mid);if(d<bd){bd=d;best=c}});
+ return best;
+}
+function setupCarousel(){
+ const sc=document.getElementById("hScroll");if(!sc)return;
+ centerCard(sc.querySelector(`[data-hcard="${CSS.escape(homeSel)}"]`),false);
+ markSel();
+ sc.addEventListener("scroll",()=>{if(drag)return;cancelAnimationFrame(carRaf);carRaf=requestAnimationFrame(()=>{const c=nearestCard(sc);if(c)selectCard(c.dataset.hcard)})},{passive:true});
+ let lp=null;
+ const start=(x,y,target)=>{
+  const card=target.closest(".hcard[data-acc]");if(!card||target.closest("button"))return;
+  if(reorderMode){beginDrag(card,x);return}
+  lp={x,y,card,t:setTimeout(()=>{reorderMode=true;sc.classList.add("reorder");const b=document.getElementById("reoBar");if(b)b.hidden=false;beginDrag(card,lp.x)},450)};
+ };
+ const move=(x,y,ev)=>{
+  if(drag){ev.preventDefault();drag.lastX=x;dragTo(x);return}
+  if(lp){if(Math.abs(x-lp.x0)>10||Math.abs(y-lp.y0)>10){clearTimeout(lp.t);lp=null}else lp.x=x}
+ };
+ const end=()=>{if(lp){clearTimeout(lp.t);lp=null}if(drag)endDrag()};
+ sc.addEventListener("touchstart",ev=>{const t=ev.touches[0];start(t.clientX,t.clientY,ev.target);if(lp){lp.x0=t.clientX;lp.y0=t.clientY}},{passive:true});
+ sc.addEventListener("touchmove",ev=>{const t=ev.touches[0];move(t.clientX,t.clientY,ev)},{passive:false});
+ sc.addEventListener("touchend",end);sc.addEventListener("touchcancel",end);
+ sc.addEventListener("pointerdown",ev=>{if(ev.pointerType!=="mouse"||!reorderMode)return;start(ev.clientX,ev.clientY,ev.target);
+  const mm=e=>move(e.clientX,e.clientY,e),mu=()=>{end();removeEventListener("pointermove",mm);removeEventListener("pointerup",mu)};
+  addEventListener("pointermove",mm);addEventListener("pointerup",mu)});
+}
+function beginDrag(card,x){
+ const sc=document.getElementById("hScroll"),cards=[...sc.querySelectorAll(".hcard[data-acc]")];
+ drag={sc,card,cards,idx:cards.indexOf(card),to:cards.indexOf(card),x0:x,lastX:x,s0:sc.scrollLeft,w:card.offsetWidth+12};
+ card.classList.add("dragging");cards.forEach(c=>{if(c!==card)c.classList.add("shift")});
+ dragTo(x);autoScroll();
+}
+function dragTo(x){
+ const d=drag;if(!d)return;
+ const dx=x-d.x0+(d.sc.scrollLeft-d.s0);
+ d.card.style.transform=`translateX(${dx}px) scale(1.04)`;
+ d.to=Math.max(0,Math.min(d.cards.length-1,d.idx+Math.round(dx/d.w)));
+ d.cards.forEach((c,j)=>{if(c===d.card)return;const sh=(j>d.idx&&j<=d.to)?-d.w:(j<d.idx&&j>=d.to)?d.w:0;c.style.transform=sh?`translateX(${sh}px)`:""});
+}
+function autoScroll(){
+ const d=drag;if(!d)return;
+ const r=d.sc.getBoundingClientRect(),edge=60;
+ const v=d.lastX<r.left+edge?-9:d.lastX>r.right-edge?9:0;
+ if(v){d.sc.scrollLeft+=v;dragTo(d.lastX)}
+ d.raf=requestAnimationFrame(autoScroll);
+}
+function endDrag(){
+ const d=drag;drag=null;cancelAnimationFrame(d.raf);suppressClick=Date.now()+450;
+ if(d.to!==d.idx){const [m]=S.accounts.splice(d.idx,1);S.accounts.splice(d.to,0,m);save()}
+ homeSel=d.card.dataset.acc;try{localStorage.setItem("cashflux-homecard",homeSel)}catch(e){}
+ render();
+}
+function moveAcc(id,dir){
+ const i=S.accounts.findIndex(a=>a.id===id),j=i+dir;if(i<0||j<0||j>=S.accounts.length)return;
+ [S.accounts[i],S.accounts[j]]=[S.accounts[j],S.accounts[i]];save();homeSel=id;render();
 }
 function onboarding(){
  return `<section class="hero"><div class="lbl">Bienvenue</div><div class="big">Tes comptes,<br>en un coup d'œil.</div>
@@ -935,9 +1073,14 @@ document.addEventListener("visibilitychange",()=>{if(document.visibilityState!==
 
 /* ---------- Événements ---------- */
 document.addEventListener("click",ev=>{
- const el=ev.target.closest("[data-tab],[data-act],[data-open-acc],[data-edit-tx],[data-edit-rec],[data-edit-goal],[data-months],[data-close]");if(!el)return;
+ const el=ev.target.closest("[data-tab],[data-act],[data-hcard],[data-open-acc],[data-edit-tx],[data-edit-rec],[data-edit-goal],[data-months],[data-close]");if(!el)return;
  if(el.dataset.close!==undefined){closeSheet();return}
  if(el.dataset.tab){go(el.dataset.tab);return}
+ if(el.dataset.hcard){
+  if(reorderMode||Date.now()<suppressClick)return;
+  if(el.dataset.hcard!==homeSel){centerCard(el,true);return}
+  if(el.dataset.hcard==="all"){go("accounts");return}
+  tab="accounts";openAcc=el.dataset.hcard;render();window.scrollTo({top:0});return}
  if(el.dataset.openAcc){tab="accounts";openAcc=el.dataset.openAcc;render();window.scrollTo({top:0});return}
  if(el.dataset.editTx){formTx(S.tx.find(t=>t.id===el.dataset.editTx));return}
  if(el.dataset.editRec){formRec(S.recurring.find(r=>r.id===el.dataset.editRec));return}
@@ -947,6 +1090,8 @@ document.addEventListener("click",ev=>{
  ({import:()=>formImport(id||openAcc),addtx:()=>formTx(null,id||openAcc),transfer:formTransfer,addrec:()=>formRec(null,el.dataset.kind),addacc:()=>formAccount(),
    editacc:()=>formAccount(accById(id)),backacc:()=>{openAcc=null;render()},setbal:()=>formSetBal(accById(id)),addgoal:()=>formGoal(),
    subadd:()=>formRec(null,"charge",S.tx.find(t=>t.id===id)),export:exportData,restore:()=>document.getElementById("backupIn").click(),
+   reorder:()=>{reorderMode=true;render()},reodone:()=>{reorderMode=false;render()},
+   mvl:()=>moveAcc(id,-1),mvr:()=>moveAcc(id,1),
    bankcfg:formBankCfg,bankkey:formBankKey,bankadd:formBankAdd,bankretry:()=>{BANK={status:null,loading:false,error:null};loadBankStatus();render()},
    bankrenew:()=>renewBank(el.dataset.name,el.dataset.country),sync:()=>syncBanks(true),
    bankdel:async()=>{if(!confirm("Déconnecter cette banque ? Les opérations déjà importées sont conservées."))return;try{await bankApi("/sessions/"+encodeURIComponent(id),{method:"DELETE"});toast("Banque déconnectée")}catch(e){toast(e.message)}loadBankStatus()},

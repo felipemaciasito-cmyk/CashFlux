@@ -1,5 +1,5 @@
 // CashFlux — service worker : fonctionne hors ligne une fois l'app ouverte une première fois
-const CACHE = "cashflux-v6";
+const CACHE = "cashflux-v7";
 const SHELL = ["./", "./index.html", "./manifest.webmanifest", "./icon-180.png", "./icon-192.png", "./icon-512.png"];
 const CDN = ["cdn.jsdelivr.net", "fonts.googleapis.com", "fonts.gstatic.com"];
 

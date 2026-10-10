@@ -243,6 +243,13 @@ button.cat{display:block;width:100%;text-align:left}
 .chmini b{display:block;font-size:14.5px}.chmini .rs{display:block;margin-top:1px}
 .chmini .go{margin-left:auto;font-size:20px;color:var(--muted)}
 .chmini .ring{flex:0 0 34px;height:34px;border-radius:50%;background:conic-gradient(var(--pos) calc(var(--p)*1%),color-mix(in srgb,var(--text) 10%,transparent) 0);-webkit-mask:radial-gradient(circle,transparent 11px,#000 12px);mask:radial-gradient(circle,transparent 11px,#000 12px)}
+/* Lien opération ↔ charge */
+.chfind{display:grid;grid-template-columns:1fr;gap:8px;margin-top:8px}
+.chfind select,.chfind input{width:100%;min-width:0;font:inherit;font-size:15px;padding:10px 12px;border-radius:12px;border:1px solid var(--line);background:var(--surface);color:var(--text)}
+.lkbtn{width:100%;display:flex;align-items:center;gap:12px;margin-top:14px;padding:12px 14px;border:0;border-radius:16px;background:var(--surface2);text-align:left}
+.lkbtn b{display:block;font-size:14px}.lkbtn .rs{display:block}.lkbtn .go{margin-left:auto;color:var(--muted);font-size:20px}
+.lktag{font-weight:600}
+.lkon .rt{color:var(--accent)}.lkchk{color:var(--accent);font-weight:800;font-size:18px}
 /* Load moment */
 @media (prefers-reduced-motion:no-preference){
   .intro .hero .big{animation:rise .7s cubic-bezier(.2,.8,.2,1) both}
@@ -332,7 +339,7 @@ try{const raw=localStorage.getItem("cap-state");if(raw)S=migrate(JSON.parse(raw)
 
 /* ---------- Persistance (sur l'appareil) ---------- */
 function save(){
- S.updatedAt=Date.now();
+ S.updatedAt=Date.now();CH_CACHE={};
  try{localStorage.setItem("cap-state",JSON.stringify(S))}catch(e){toast("Stockage plein : exporte une sauvegarde")}
 }
 
@@ -397,7 +404,14 @@ function chargeScore(r,t,month){
  const ok=(sim&&(diff<=tol||(r.variable&&diff<=r.amount*0.6)))||(same&&diff<=0.5&&dd<=4&&!isBudgetCat(t.category));
  return ok?(sim?3:0)+(diff<=0.5?3:diff<=tol?1.5:0)+(same?1:0)-dd*0.05:-1;
 }
+let CH_CACHE={};
 function chargesStatus(month=curYM()){
+ if(CH_CACHE[month])return CH_CACHE[month];
+ return CH_CACHE[month]=chargesStatusRaw(month);
+}
+// Charge fixe à laquelle une opération est rattachée (ou null)
+const chargeOfTx=t=>t&&t.amount<0?chargesStatus(ym(t.date)).find(c=>c.tx&&c.tx.id===t.id)||null:null;
+function chargesStatusRaw(month){
  const charges=S.recurring.filter(r=>r.kind==="charge");
  const debits=S.tx.filter(t=>t.amount<0&&ym(t.date)===month);
  const res=new Map(),used=new Set();
@@ -406,7 +420,7 @@ function chargesStatus(month=curYM()){
   if(o==="skip"||o==="manual")res.set(r.id,{kind:o});
   else{const t=debits.find(x=>x.id===o);if(t){res.set(r.id,{kind:"tx",tx:t,manual:true});used.add(t.id)}}});
  // 2. Rapprochement automatique (meilleures correspondances d'abord)
- const pairs=[];charges.forEach(r=>{if(res.has(r.id))return;debits.forEach(t=>{if(used.has(t.id))return;const sc=chargeScore(r,t,month);if(sc>0)pairs.push([sc,r,t])})});
+ const pairs=[];charges.forEach(r=>{if(res.has(r.id))return;debits.forEach(t=>{if(used.has(t.id)||(r.excl||[]).includes(t.id))return;const sc=chargeScore(r,t,month);if(sc>0)pairs.push([sc,r,t])})});
  pairs.sort((a,b)=>b[0]-a[0]).forEach(([,r,t])=>{if(res.has(r.id)||used.has(t.id))return;res.set(r.id,{kind:"tx",tx:t});used.add(t.id)});
  const today=todayISO(),isCur=month===curYM(),td=+today.slice(8);
  return charges.map(r=>{
@@ -465,6 +479,7 @@ let reorderMode=false,drag=null,suppressClick=0,carRaf=0;
 function go(t){tab=t;openAcc=null;reorderMode=false;render();window.scrollTo({top:0})}
 
 function render(){
+ CH_CACHE={};
  if(classifyCharges())save();
  const d=new Date();
  document.getElementById("monthLbl").textContent=d.toLocaleDateString("fr-FR",{weekday:"long",day:"numeric",month:"long"});
@@ -491,7 +506,7 @@ function bigMoney(n){const s=fmt.format(n),i=s.lastIndexOf(",");return i>0?`${es
 function txRow(t,showAcc=true){
  const a=accById(t.accountId),todo=needsCat(t);
  return `<div class="rowbtn" role="button" tabindex="0" data-edit-tx="${t.id}"><div class="row"><button class="av avbtn${todo?" todo":""}" data-pick-tx="${t.id}" aria-label="${todo?"Choisir une catégorie":"Changer de catégorie"}">${todo?"?":catIcon(t.category)}</button>
- <div class="rmain"><div class="rt">${esc(t.label)}</div><div class="rs">${dateLbl(t.date)} · ${todo?'<b class="todotxt">À classer</b>':esc(t.category)}${showAcc&&a?" · "+esc(a.name):""}</div></div>
+ <div class="rmain"><div class="rt">${esc(t.label)}</div><div class="rs">${dateLbl(t.date)} · ${todo?'<b class="todotxt">À classer</b>':esc(t.category)}${showAcc&&a?" · "+esc(a.name):""}${(()=>{const c=chargeOfTx(t);return c?` · <span class="lktag">🔗 ${esc(c.r.label)}</span>`:""})()}</div></div>
  <div class="ramt ${t.amount>0?"pos":""}">${money(t.amount,true)}</div></div></div>`;
 }
 const todoList=accId=>S.tx.filter(t=>needsCat(t)&&(!accId||t.accountId===accId)).sort((x,z)=>z.date.localeCompare(x.date));
@@ -800,16 +815,18 @@ function formTx(t,accId){
  <div class="f2"><label class="f"><span>Catégorie</span><select id="fCat">${catOptions(t.category)}</select></label>
  <label class="f"><span>Date</span><input id="fDate" type="date" value="${t.date}"></label></div>
  <label class="f"><span>Compte</span><select id="fAcc">${accOptions(t.accountId)}</select></label>
+ ${S.recurring.some(r=>r.kind==="charge")?(()=>{const c=e?chargeOfTx(t):null;return `<label class="f" id="fChgW" ${kind==="in"?"hidden":""}><span>Charge fixe</span><select id="fChg"><option value="">Aucune</option>${S.recurring.filter(r=>r.kind==="charge").map(r=>`<option value="${r.id}" ${c&&c.r.id===r.id?"selected":""}>${esc(r.label)} · ${money0(r.amount)}</option>`).join("")}</select></label>`})():""}
  <button class="btn p w" id="fSave">${e?"Enregistrer":"Ajouter"}</button>${e?`<button class="btn d w" style="margin-top:10px" id="fDel">Supprimer</button>`:""}`,root=>{
+  const chgSel=root.querySelector("#fChg"),chgInit=chgSel?chgSel.value:"";
   let touched=e;
-  root.querySelectorAll("[data-k]").forEach(b=>b.onclick=()=>{kind=b.dataset.k;root.querySelectorAll("[data-k]").forEach(x=>x.classList.toggle("on",x===b))});
+  root.querySelectorAll("[data-k]").forEach(b=>b.onclick=()=>{kind=b.dataset.k;root.querySelectorAll("[data-k]").forEach(x=>x.classList.toggle("on",x===b));const w=root.querySelector("#fChgW");if(w)w.hidden=kind==="in"});
   root.querySelector("#fCat").onchange=()=>touched=true;
   root.querySelector("#fLbl").oninput=ev=>{if(!touched)root.querySelector("#fCat").value=guessCat(ev.target.value,kind==="in"?1:-1)};
   root.querySelector("#fSave").onclick=()=>{
    const amt=num(root.querySelector("#fAmt").value);if(!amt){toast("Indique un montant");return}
    const o=e?t:{id:uid(),source:"manuel"};
    Object.assign(o,{amount:kind==="in"?Math.abs(amt):-Math.abs(amt),label:root.querySelector("#fLbl").value.trim()||"Opération",category:root.querySelector("#fCat").value,date:root.querySelector("#fDate").value||todayISO(),accountId:root.querySelector("#fAcc").value});
-   if(!e)S.tx.push(o);if(touched&&o.amount<0&&isKnownCat(o.category))learn(o.label,o.category);save();closeSheet();render();toast(e?"Opération enregistrée":"Opération ajoutée");
+   if(!e)S.tx.push(o);CH_CACHE={};if(chgSel&&o.amount<0&&(chgSel.value!==chgInit||(!e&&chgSel.value)))linkTx(o,chgSel.value);if(touched&&o.amount<0&&isKnownCat(o.category))learn(o.label,o.category);save();closeSheet();render();toast(e?"Opération enregistrée":"Opération ajoutée");
   };
   const del=root.querySelector("#fDel");if(del)del.onclick=()=>{S.tx=S.tx.filter(x=>x.id!==t.id);save();closeSheet();render();toast("Opération supprimée")};
  });
@@ -826,7 +843,9 @@ function formPick(t,after){
  <div class="rs" style="margin:14px 0 8px;font-weight:700">Autres</div>
  <div class="cgrid">${opts.filter(o=>o.sys).map(tile).join("")}</div>
  <label class="chk" style="margin-top:14px"><input type="checkbox" id="pLearn" checked> Classer pareil les autres « ${esc(String(t.label).slice(0,26))} » et les prochaines</label>
+ ${t.amount<0&&S.recurring.some(r=>r.kind==="charge")?(()=>{const c=chargeOfTx(t);return `<button class="lkbtn" id="pLink"><span>🔗</span><span><b>${c?"Charge fixe : "+esc(c.r.label):"Attribuer à une charge fixe"}</b><span class="rs">${c?"Touche pour changer ou retirer":"Loyer, abonnement, assurance…"}</span></span><span class="go">›</span></button>`})():""}
  <div style="display:flex;justify-content:space-between;margin-top:6px">${isKnownCat(t.category)&&t.amount<0?`<button class="link" id="pClear">Remettre à classer</button>`:"<span></span>"}<button class="link" data-act="cats">Gérer les catégories</button></div>`,root=>{
+  const lk=root.querySelector("#pLink");if(lk)lk.onclick=()=>formLinkCharge(t,after);
   const done=msg=>{save();closeSheet();render();toast(msg);if(after)setTimeout(after,340)};
   root.querySelectorAll("[data-pick]").forEach(b=>b.onclick=()=>{
    t.category=b.dataset.pick;let n=0;
@@ -896,27 +915,67 @@ function formCatMonth(name){
  sheet(`<h3>${esc(catIcon(name))} ${esc(name)} · ce mois</h3>
  <div class="card" style="padding:4px 14px;box-shadow:none;background:var(--surface2)">${list.length?list.map(t=>txRow(t)).join(""):`<div class="empty">Aucune dépense ce mois-ci.</div>`}</div>`);
 }
+function linkTx(t,rid){
+ const month=ym(t.date),cur=chargeOfTx(t);
+ S.recurring.forEach(r=>{if(r.paid&&r.paid[month]===t.id)delete r.paid[month]});
+ if(rid){
+  const r=S.recurring.find(x=>x.id===rid);if(!r)return;
+  r.paid=r.paid||{};r.paid[month]=t.id;r.excl=(r.excl||[]).filter(x=>x!==t.id);
+  if(needsCat(t)&&isKnownCat(r.category))t.category=r.category;
+ }else if(cur){cur.r.excl=[...new Set([...(cur.r.excl||[]),t.id])]}
+ CH_CACHE={};
+}
+function formLinkCharge(t,after){
+ const month=ym(t.date),cur=chargeOfTx(t),st=chargesStatus(month);
+ sheet(`<h3>Attribuer à une charge fixe</h3>
+ <div class="row" style="padding-top:0"><div class="rmain"><div class="rt">${esc(t.label)}</div><div class="rs">${dateLbl(t.date)} · ${esc(accById(t.accountId)?.name||"")}</div></div><div class="ramt">${money(t.amount,true)}</div></div>
+ <div class="card" style="padding:4px 14px;box-shadow:none;background:var(--surface2);margin-top:8px">
+ ${st.map(c=>{const mine=cur&&cur.r.id===c.r.id,other=c.tx&&!mine;return `<button class="rowbtn" data-lk="${c.r.id}"><div class="row${mine?" lkon":""}"><div class="av">${isKnownCat(c.r.category)?catIcon(c.r.category):"📌"}</div><div class="rmain"><div class="rt">${esc(c.r.label)}</div><div class="rs">Prévu le ${c.due} · ${money0(c.r.amount)}${other?` · déjà liée à « ${esc(c.tx.label.slice(0,22))} »`:c.st==="skip"?" · ignorée ce mois":""}</div></div>${mine?'<span class="lkchk">✓</span>':""}</div></button>`}).join("")||`<div class="empty">Aucune charge fixe. Ajoute-en dans l'onglet Budget.</div>`}
+ </div>
+ ${cur?`<button class="btn w" style="margin-top:12px" id="lkNone">Ce n'est pas une charge fixe</button>`:""}
+ <div class="rs" style="margin-top:10px">Le lien vaut pour ${new Date(month+"-15").toLocaleDateString("fr-FR",{month:"long",year:"numeric"})}. Si la charge était déjà liée à une autre opération, celle-ci prend sa place.</div>`,root=>{
+  const done=m=>{save();closeSheet();render();toast(m);if(after)setTimeout(after,340)};
+  root.querySelectorAll("[data-lk]").forEach(b=>b.onclick=()=>{const r=S.recurring.find(x=>x.id===b.dataset.lk);linkTx(t,r.id);done(`Attribuée à « ${r.label} »`)});
+  const n=root.querySelector("#lkNone");if(n)n.onclick=()=>{linkTx(t,"");done("Lien retiré")};
+ });
+}
 function formCharge(id){
  const r=S.recurring.find(x=>x.id===id);if(!r)return;
  const month=curYM(),c=chargesStatus().find(x=>x.r.id===id);
  const setO=v=>{r.paid=r.paid||{};if(v==null)delete r.paid[month];else r.paid[month]=v;save();closeSheet();render()};
  const taken=new Set(chargesStatus().filter(x=>x.tx&&x.r.id!==id).map(x=>x.tx.id));
- const cands=S.tx.filter(t=>t.amount<0&&ym(t.date)===month&&!taken.has(t.id)).map(t=>({t,sc:chargeScore(r,t,month)})).sort((a,b)=>b.sc-a.sc||b.t.date.localeCompare(a.t.date)).slice(0,30);
+ const pool=S.tx.filter(t=>t.amount<0&&ym(t.date)===month&&!taken.has(t.id)&&!(c.tx&&t.id===c.tx.id)).map(t=>({t,sc:chargeScore(r,t,month)}));
+ let fAcc=r.accountId&&accById(r.accountId)?r.accountId:"",fQ="";
  const lbl={paid:"✓ Prélevée",soon:"À venir",late:"Pas encore vue",skip:"Ignorée ce mois-ci"}[c.st];
  sheet(`<h3>${esc(r.label)}</h3>
  <div class="chstate ch-${c.st}"><b>${lbl}</b><span>${c.st==="paid"&&c.tx?`${dateLbl(c.tx.date)} · ${money(c.tx.amount,true)}`:`Prévu le ${c.due} · ${money(-r.amount,true)}`}</span></div>
  ${c.tx?`<div class="rs" style="margin:10px 0 4px;font-weight:700">Opération reconnue${c.manual?" (choisie à la main)":" automatiquement"}</div><div class="card" style="padding:4px 14px;box-shadow:none;background:var(--surface2)"><div class="row"><div class="av">${catIcon(c.tx.category)}</div><div class="rmain"><div class="rt">${esc(c.tx.label)}</div><div class="rs">${dateLbl(c.tx.date)} · ${esc(accById(c.tx.accountId)?.name||"")}</div></div><div class="ramt">${money(c.tx.amount,true)}</div></div></div>`:""}
  <details ${c.st==="paid"?"":"open"} style="margin-top:12px"><summary class="rs" style="cursor:pointer;font-weight:700">${c.tx?"Ce n'est pas la bonne opération ?":"Choisir l'opération correspondante"}</summary>
- <div class="card" style="padding:4px 14px;box-shadow:none;background:var(--surface2);margin-top:8px;max-height:300px;overflow:auto">${cands.length?cands.map(({t,sc})=>`<button class="rowbtn" data-link="${t.id}"><div class="row"><div class="av">${sc>0?"★":catIcon(t.category)}</div><div class="rmain"><div class="rt">${esc(t.label)}</div><div class="rs">${dateLbl(t.date)}${sc>0?" · probable":""}</div></div><div class="ramt">${money(t.amount,true)}</div></div></button>`).join(""):`<div class="empty">Aucun débit disponible ce mois-ci.</div>`}</div></details>
+ <div class="chfind"><select id="cfAcc" aria-label="Compte"><option value="">Tous les comptes</option>${accOptions(fAcc)}</select>
+ <input id="cfQ" type="search" placeholder="Rechercher un libellé…" autocomplete="off" aria-label="Rechercher un libellé"></div>
+ <div class="rs" id="cfInfo" style="margin:6px 2px 0"></div>
+ <div class="card" id="cfList" style="padding:4px 14px;box-shadow:none;background:var(--surface2);margin-top:6px;max-height:320px;overflow:auto"></div></details>
  <div style="display:grid;gap:10px;margin-top:14px">
+ ${c.tx?`<button class="btn w" id="chUnlink">Délier cette opération</button>`:""}
  ${c.st!=="paid"?`<button class="btn w" id="chManual">Marquer comme prélevée (sans opération)</button>`:""}
  ${c.st!=="skip"?`<button class="btn w" id="chSkip">Pas de prélèvement ce mois-ci</button>`:""}
- ${(r.paid||{})[month]?`<button class="btn w" id="chAuto">Revenir à la détection automatique</button>`:""}
+ ${(r.paid||{})[month]||(r.excl||[]).some(x=>{const t=S.tx.find(y=>y.id===x);return t&&ym(t.date)===month})?`<button class="btn w" id="chAuto">Revenir à la détection automatique</button>`:""}
  <button class="btn p w" id="chEdit">Modifier la charge</button></div>`,root=>{
-  root.querySelectorAll("[data-link]").forEach(b=>b.onclick=()=>{const t=S.tx.find(x=>x.id===b.dataset.link);if(t&&needsCat(t)&&isKnownCat(r.category))t.category=r.category;setO(b.dataset.link);toast("Charge liée à l'opération")});
+  const list=root.querySelector("#cfList"),info=root.querySelector("#cfInfo");
+  const draw=()=>{
+   const q=labelKey(fQ);
+   const res=pool.filter(({t})=>(!fAcc||t.accountId===fAcc)&&(!q||labelKey(t.label).includes(q))).sort((a,b)=>b.sc-a.sc||b.t.date.localeCompare(a.t.date));
+   info.textContent=`${res.length} débit${res.length>1?"s":""} en ${new Date(month+"-15").toLocaleDateString("fr-FR",{month:"long"})}${fAcc?" sur "+(accById(fAcc)?.name||""):" sur tous les comptes"}`;
+   list.innerHTML=res.length?res.slice(0,60).map(({t,sc})=>`<button class="rowbtn" data-link="${t.id}"><div class="row"><div class="av">${sc>0?"★":catIcon(t.category)}</div><div class="rmain"><div class="rt">${esc(t.label)}</div><div class="rs">${dateLbl(t.date)}${!fAcc&&S.accounts.length>1?" · "+esc(accById(t.accountId)?.name||""):""}${sc>0?" · probable":""}</div></div><div class="ramt">${money(t.amount,true)}</div></div></button>`).join(""):`<div class="empty">${fQ||fAcc?"Aucun débit ne correspond. Essaie un autre mot ou « Tous les comptes ».":"Aucun débit disponible ce mois-ci."}</div>`;
+   list.querySelectorAll("[data-link]").forEach(b=>b.onclick=()=>{const t=S.tx.find(x=>x.id===b.dataset.link);if(t){linkTx(t,r.id);save();closeSheet();render();toast("Charge liée à l'opération")}});
+  };
+  root.querySelector("#cfAcc").onchange=ev=>{fAcc=ev.target.value;draw()};
+  root.querySelector("#cfQ").oninput=ev=>{fQ=ev.target.value;draw()};
+  draw();
+  const u=root.querySelector("#chUnlink");if(u)u.onclick=()=>{linkTx(c.tx,"");save();closeSheet();render();toast("Opération déliée")};
   const m=root.querySelector("#chManual");if(m)m.onclick=()=>{setO("manual");toast("Marquée comme prélevée")};
   const k=root.querySelector("#chSkip");if(k)k.onclick=()=>{setO("skip");toast("Ignorée pour ce mois")};
-  const a=root.querySelector("#chAuto");if(a)a.onclick=()=>{setO(null);toast("Détection automatique")};
+  const a=root.querySelector("#chAuto");if(a)a.onclick=()=>{r.excl=(r.excl||[]).filter(x=>{const t=S.tx.find(y=>y.id===x);return t&&ym(t.date)!==month});setO(null);toast("Détection automatique")};
   root.querySelector("#chEdit").onclick=()=>formRec(r);
  });
 }

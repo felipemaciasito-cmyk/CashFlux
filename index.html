@@ -815,6 +815,7 @@ function formTx(t,accId){
  <div class="f2"><label class="f"><span>Catégorie</span><select id="fCat">${catOptions(t.category)}</select></label>
  <label class="f"><span>Date</span><input id="fDate" type="date" value="${t.date}"></label></div>
  <label class="f"><span>Compte</span><select id="fAcc">${accOptions(t.accountId)}</select></label>
+ ${e&&t.bankRaw?`<details style="margin:-4px 0 12px"><summary class="rs" style="cursor:pointer">Texte transmis par la banque</summary><pre style="white-space:pre-wrap;font-size:12px;background:var(--surface2);padding:10px;border-radius:12px;margin:6px 0 0">${esc(t.bankRaw)}</pre></details>`:""}
  ${S.recurring.some(r=>r.kind==="charge")?(()=>{const c=e?chargeOfTx(t):null;return `<label class="f" id="fChgW" ${kind==="in"?"hidden":""}><span>Charge fixe</span><select id="fChg"><option value="">Aucune</option>${S.recurring.filter(r=>r.kind==="charge").map(r=>`<option value="${r.id}" ${c&&c.r.id===r.id?"selected":""}>${esc(r.label)} · ${money0(r.amount)}</option>`).join("")}</select></label>`})():""}
  <button class="btn p w" id="fSave">${e?"Enregistrer":"Ajouter"}</button>${e?`<button class="btn d w" style="margin-top:10px" id="fDel">Supprimer</button>`:""}`,root=>{
   const chgSel=root.querySelector("#fChg"),chgInit=chgSel?chgSel.value:"";
@@ -825,6 +826,7 @@ function formTx(t,accId){
   root.querySelector("#fSave").onclick=()=>{
    const amt=num(root.querySelector("#fAmt").value);if(!amt){toast("Indique un montant");return}
    const o=e?t:{id:uid(),source:"manuel"};
+   const newLbl=root.querySelector("#fLbl").value.trim()||"Opération";if(e&&newLbl!==t.label)o.labelEdited=true;
    Object.assign(o,{amount:kind==="in"?Math.abs(amt):-Math.abs(amt),label:root.querySelector("#fLbl").value.trim()||"Opération",category:root.querySelector("#fCat").value,date:root.querySelector("#fDate").value||todayISO(),accountId:root.querySelector("#fAcc").value});
    if(!e)S.tx.push(o);CH_CACHE={};if(chgSel&&o.amount<0&&(chgSel.value!==chgInit||(!e&&chgSel.value)))linkTx(o,chgSel.value);if(touched&&o.amount<0&&isKnownCat(o.category))learn(o.label,o.category);save();closeSheet();render();toast(e?"Opération enregistrée":"Opération ajoutée");
   };
@@ -1250,26 +1252,50 @@ function pickBalance(list){
  for(const t of BAL_PRIO){const b=list.find(x=>x.balance_type===t);if(b&&isFinite(parseFloat(b.balance_amount?.amount)))return parseFloat(b.balance_amount.amount)}
  const v=parseFloat(list[0].balance_amount?.amount);return isFinite(v)?v:null;
 }
-function cleanBankLabel(s){
- s=String(s||"").replace(/\b(PAIEMENT PAR CARTE|PAIEMENT CB|CARTE X?\d{4}|CB\*?\d*|PRLV SEPA|PRELEVEMENT SEPA|PRELEVEMENT|VIR SEPA( RECU| EMIS)?|VIR INST( RE| EM)?|FACTURE CARTE DU \d+)\b/gi," ")
-  .replace(/\b\d{2}\/\d{2}(\/\d{2,4})?\b/g," ").replace(/\s{2,}/g," ").trim();
+/* ---------- Libellés bancaires : retrouver le vrai nom (créancier SEPA, commerçant…) ---------- */
+const STRIP_RE=/\b(PAIEMENT PAR CARTE|PAIEMENT CB|ACHAT CB|CARTE X?\d{4}|CB\*?\d*|FACTURE CARTE( DU \d+)?|VIR(EMENT)?( SEPA)?( INST(ANTANE)?)?( RECU| REÇU| EMIS| ÉMIS| RE| EM)?|PRE?LE?VT|PRLV|PR[ÉE]L[ÈE]VEMENT|PRELEV)\b(\s+SEPA)?(\s+(RECU|REÇU|EMIS|ÉMIS|EUROP[ÉE]EN|ORDINAIRE))*(\s+D\/O\b)?/gi;
+const GENERIC=/^(sepa|recu|reçu|emis|d\/o|europeen|ordinaire|operation|opération|paiement|virement|prelevement|prélèvement|divers)$/i;
+function tidyName(s){
+ s=String(s||"").replace(STRIP_RE," ")
+  .replace(/\b\d{2}\/\d{2}(\/\d{2,4})?\b/g," ")
+  .replace(/\s\/?\s*(R[ÉE]F\.?|REF\.?MANDAT|MANDAT|ICS|RUM|ID ?CR[EÉ]ANCIER|N°|NUM|ECH(EANCE)?|LIBELL?[ÉE]|MOTIF|D[ÉE]BITEUR|DATE)\b.*$/i,"")
+  .replace(/\s\d{5}\b.*$/,"")
+  .replace(/\b(?=[A-Z0-9]*\d)[A-Z0-9]{6,}\b/gi," ")
+  .replace(/[*:\/|]+/g," ").replace(/\s{2,}/g," ").trim();
+ return s.split(" ").filter(w=>!GENERIC.test(w)).length?s:"";
+}
+function kvName(txt,keys){
+ const re=new RegExp("(?:^|\\s|\\/)("+keys+")\\s*[:.]?\\s*(.+?)(?=\\s*\\/?\\s*(?:R[EÉ]F|MANDAT|ICS|RUM|LIBELL?[EÉ]|MOTIF|D[EÉ]BITEUR|CR[EÉ]ANCIER|B[EÉ]N[EÉ]FICIAIRE|DATE|ECH)\\b|$)","i");
+ const m=txt.match(re);return m?tidyName(m[2]):"";
+}
+function titleCase(s){
  if(!s) return "Opération";
- if(s===s.toUpperCase()) s=s.toLowerCase().replace(/(^|\s|-)\S/g,c=>c.toUpperCase());
+ if(s===s.toUpperCase()) s=(/^\S{2,4}$/.test(s)?s:s.toLowerCase().replace(/(^|\s|-|')\S/g,c=>c.toUpperCase()));
  return s.slice(0,80);
 }
+function bankLabel(party,rem,note){
+ const R=String(rem||"").replace(/\s+/g," ");
+ const cands=[
+  kvName(R,"CR[EÉ]ANCIER INITIAL|NOM DU CR[EÉ]ANCIER|CR[EÉ]ANCIER|B[EÉ]N[EÉ]FICIAIRE|[EÉ]METTEUR"),
+  tidyName(party),
+  kvName(R,"DONNEUR D'?ORDRE|D\\/O|DE"),
+  tidyName(R),tidyName(note)];
+ return titleCase(cands.find(c=>c&&/[a-z]{2}/i.test(c))||"");
+}
+const cleanBankLabel=x=>bankLabel("",x,"");
 const dayDiff=(a,b)=>Math.abs((new Date(a+"T12:00")-new Date(b+"T12:00"))/864e5);
 async function syncBanks(manual){
  if(syncing||!S.bank.url||!S.bank.token) return;
  if(!Object.values(S.bank.links).some(Boolean)){if(manual)toast("Associe d'abord un compte bancaire à un compte CashFlux");return}
  syncing=true;if(tab==="settings"||tab==="home")render();
- let added=0;const errors=[];
+ let added=0,relabeled=0;const errors=[];
  try{
   const st=await bankApi("/status");BANK.status=st;
   for(const s of st.sessions){
    for(const a of s.accounts){
     const key=bankKey(a),acc=accById(S.bank.links[key]);if(!acc) continue;
     try{
-     const from=S.bank.from[key]||isoDaysAgo(90);
+     const from=(S.bank.labelV||0)<2?isoDaysAgo(90):(S.bank.from[key]||isoDaysAgo(90));
      const {transactions=[]}=await bankApi(`/accounts/${encodeURIComponent(a.uid)}/transactions?date_from=${from}`);
      for(const t of transactions){
       if(t.status&&t.status!=="BOOK") continue;
@@ -1277,13 +1303,18 @@ async function syncBanks(manual){
       const amount=Math.round((t.credit_debit_indicator==="DBIT"?-Math.abs(raw):t.credit_debit_indicator==="CRDT"?Math.abs(raw):raw)*100)/100;
       const date=String(t.booking_date||t.value_date||t.transaction_date||todayISO()).slice(0,10);
       const rem=Array.isArray(t.remittance_information)?t.remittance_information.join(" "):(t.remittance_information||"");
-      const party=amount<0?t.creditor?.name:t.debtor?.name;
-      const label=cleanBankLabel(party||rem||t.note||"");
+      const party=amount<0?(t.creditor?.name||t.ultimate_creditor?.name):(t.debtor?.name||t.ultimate_debtor?.name);
+      const label=bankLabel(party,rem,t.note);
+      const bankRaw=[party,rem,t.note].filter(Boolean).join(" | ").slice(0,400);
       const ext=key+":"+(t.entry_reference||t.transaction_id||(date+"|"+amount+"|"+rem.slice(0,30)));
-      if(S.tx.some(x=>x.extId===ext)) continue;
+      const known=S.tx.find(x=>x.extId===ext);
+      if(known){ // relit le libellé des opérations déjà importées, sauf si tu l'as modifié à la main
+       if(known.source==="banque"&&!known.labelEdited&&known.label!==label){known.label=label;known.bankRaw=bankRaw;if(needsCat(known))known.category=guessCat(label+" "+rem,amount);relabeled++}
+       else if(!known.bankRaw)known.bankRaw=bankRaw;
+       continue}
       const twin=S.tx.find(x=>x.accountId===acc.id&&!x.extId&&Math.abs(x.amount-amount)<0.005&&dayDiff(x.date,date)<=3);
-      if(twin){twin.extId=ext;continue}
-      S.tx.push({id:uid(),accountId:acc.id,date,label,amount,category:guessCat(label+" "+rem,amount),source:"banque",extId:ext});added++;
+      if(twin){twin.extId=ext;twin.bankRaw=bankRaw;continue}
+      S.tx.push({id:uid(),accountId:acc.id,date,label,amount,category:guessCat(label+" "+rem,amount),source:"banque",extId:ext,bankRaw});added++;
      }
      const {balances}=await bankApi(`/accounts/${encodeURIComponent(a.uid)}/balances`);
      const b=pickBalance(balances);if(b!=null) acc.initial+=b-accBalance(acc);
@@ -1291,11 +1322,12 @@ async function syncBanks(manual){
     }catch(e){errors.push(acc.name+" : "+e.message)}
    }
   }
+  if(!errors.length)S.bank.labelV=2;
   S.bank.lastSync=Date.now();save();
  }catch(e){errors.push(e.message)}
  syncing=false;render();
  if(errors.length) toast(errors[0].slice(0,90));
- else if(manual||added) toast(added?`${added} nouvelle${added>1?"s":""} opération${added>1?"s":""}`:"Comptes à jour");
+ else if(manual||added||relabeled) toast([added?`${added} nouvelle${added>1?"s":""} opération${added>1?"s":""}`:"",relabeled?`${relabeled} libellé${relabeled>1?"s":""} corrigé${relabeled>1?"s":""}`:""].filter(Boolean).join(" · ")||"Comptes à jour");
 }
 function maybeSync(){if(S.bank.url&&S.bank.token&&Object.values(S.bank.links).some(Boolean)&&Date.now()-(S.bank.lastSync||0)>4*36e5)syncBanks(false)}
 function bankCard(){
